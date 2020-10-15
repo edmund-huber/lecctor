@@ -1,0 +1,8 @@
+#!/bin/bash -ex
+
+# .. gotta put this in a makefile ..
+mkdir gcc-bin || true
+# -O0 is default, but also makes assembly easier to parse for us?
+gcc -O0 -std=c99 -Wall as-tracer.c -o gcc-bin/as
+
+gcc -Bgcc-bin -fverbose-asm -ffixed-r15 ${@:1}
