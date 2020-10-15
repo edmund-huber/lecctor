@@ -5,4 +5,8 @@ mkdir gcc-bin || true
 # -O0 is default, but also makes assembly easier to parse for us?
 gcc -O0 -std=c99 -Wall as-tracer.c -o gcc-bin/as
 
+# -fverbose-asm: since GCC 7.1, gcc can annotate the asm output with which
+# source lines correspond to them.
+# -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
+# using certain registers in the generated asm.
 gcc -Bgcc-bin -fverbose-asm -ffixed-r15 ${@:1}

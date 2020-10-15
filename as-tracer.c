@@ -11,6 +11,41 @@
         } \
     }
 
+#define NAME "as-tracer"
+
+int skip_one(char c, char **s) {
+    if (**s == c) {
+        *s += 1;
+        return 1;
+    }
+    return 0;
+}
+
+int skip_many(char c, char **s) {
+    int ret = 0;
+    for (; **s == c; *s += 1) ret = 1;
+    return ret;
+}
+
+int skip_exactly(char *to_skip, char **s) {
+    if (strncmp(*s, to_skip, strlen(to_skip)) == 0) {
+        *s += strlen(to_skip);
+        return 1;
+    }
+    return 0;
+}
+
+int scan_until(char c, char **s, char *scanned, int scanned_sz) {
+    int ret = 0;
+    int scanned_off = 0;
+    for (; (**s != c) && (**s != '\0'); *s += 1) {
+        ASSERT(scanned_off < scanned_sz);
+        scanned[scanned_off++] = **s;
+        ret = 1;
+    }
+    return ret;
+}
+
 int main(int argc, char **argv) {
     // Parse the command line.
     char *output_fn = NULL;
@@ -46,6 +81,10 @@ int main(int argc, char **argv) {
     ASSERT(optind == argc - 1);
     char *input_fn = argv[optind];
 
+    // The following is the state of the parser, which works in a single pass:
+    // On the first line, we are expecting a .file directive.
+    int expecting_file_directive = 1;
+
     FILE *f = fopen(input_fn, "r");
     char line[128];
     while (fgets(line, sizeof(line), f) != NULL) {
@@ -54,6 +93,23 @@ int main(int argc, char **argv) {
         ASSERT(strlen(line) > 0);
         ASSERT((line[strlen(line) - 1] == '\n') || feof(f));
         printf(" --------- %s", line);
+
+        // Have we found a .file directive?
+        char *s = line;
+        char source_fn[128] = { 0 };
+        int found_file_directive =
+            skip_one('\t', &s) &&
+            skip_exactly(".file", &s) &&
+            skip_one('\t', &s) &&
+            skip_one('"', &s) &&
+            scan_until('"', &s, source_fn, sizeof(source_fn));
+        if (found_file_directive) {
+            printf(NAME ": instrumenting '%s'\n", source_fn);
+            expecting_file_directive = 0;
+            continue;
+        } else {
+            ASSERT(!expecting_file_directive);
+        }
     }
 
     return 0;
