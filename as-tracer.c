@@ -15,24 +15,39 @@
 #define NAME "as-tracer"
 
 int skip_exactly(char *to_skip, char **s) {
+    // If *s begins with to_skip, progress *s past to_skip and return 1.
     if (strncmp(*s, to_skip, strlen(to_skip)) == 0) {
         *s += strlen(to_skip);
         return 1;
     }
+    // Else return 0.
     return 0;
 }
 
 int scan_until(char c, char **s, char *scanned, int scanned_sz) {
-    int ret = 0;
+    char *original_s = *s;
+    // Until we've reached the end of *s,
     int scanned_off = 0;
-    for (; (**s != c) && (**s != '\0'); *s += 1) {
-        if (scanned_off == scanned_sz) {
-            return 0;
+    scanned[0] = '\0';
+    for (; **s != '\0'; *s += 1) {
+        // .. if we found c, then success.
+        if (**s == c) {
+            return 1;
         }
-        scanned[scanned_off++] = **s;
-        ret = 1;
+        // Store the characters we're skipping in scanned.
+        if (scanned != NULL) {
+            if (scanned_off + 1 == scanned_sz) {
+                return 0;
+            }
+            scanned[scanned_off] = **s;
+            scanned[scanned_off + 1] = '\0';
+            scanned_off++;
+        }
     }
-    return ret;
+    // If we did not find c in *s, then we need to restore *s to where it was
+    // at the start.
+    *s = original_s;
+    return 0;
 }
 
 // Reference: https://en.wikibooks.org/wiki/X86_Assembly/Control_Flow .
@@ -103,8 +118,6 @@ int main(int argc, char **argv) {
     FILE *in_file = fopen(input_fn, "r");
     char line[128];
     while (fgets(line, sizeof(line), in_file) != NULL) {
-        // We should have sized `line` to the longest single line that we can
-        // receive, otherwise our parsing is wrong.
         ASSERT(strlen(line) > 0);
         ASSERT((line[strlen(line) - 1] == '\n') || feof(in_file));
 
@@ -121,7 +134,7 @@ int main(int argc, char **argv) {
             expecting_file_directive = 0;
             previous_line_no = -1;
             source_buffer[0] = '\0';
-            goto parsed;
+            goto done_with_line;
         } else {
             ASSERT(!expecting_file_directive);
         }
@@ -151,7 +164,7 @@ int main(int argc, char **argv) {
             // we've already seen, just keep going.
             int line_no = atoi(found_line_no);
             if (line_no == previous_line_no)
-                goto parsed;
+                goto done_with_line;
 
             // Otherwise, let's add it to source_buffer.
             ASSERT(sizeof(source_buffer) > strlen(source_buffer) + strlen(found_line));
@@ -161,25 +174,61 @@ int main(int argc, char **argv) {
             ) < sizeof(source_buffer) - strlen(source_buffer));
 
             previous_line_no = line_no;
-            goto parsed;
+            goto done_with_line;
         }
 
         // If we come across a jmp, call, ret, (etc) -- any instruction that
         // causes the instruction pointer to change -- let's insert the "record
         // stub".
         s = line;
-        skip_exactly("\t", &s);
-        for (int i = 0; x86_64_branching_inst[i] != NULL; i++) {
-            if (skip_exactly(x86_64_branching_inst[i], &s)) {
-                fprintf(temp_f, "# RECORD: %s\n", source_fn);
-                fprintf(temp_f, "%s\n", source_buffer);
-                previous_line_no = -1;
-                source_buffer[0] = '\0';
-                break;
+        if (skip_exactly("\t", &s)) {
+            for (int i = 0; x86_64_branching_inst[i] != NULL; i++) {
+                if (skip_exactly(x86_64_branching_inst[i], &s)) {
+                    // Print what we'd like to record directly to the assembly
+                    // -- for debugging purposes.
+                    fprintf(temp_f, "# WANT TO RECORD: %s\n", source_fn);
+                    fprintf(temp_f, "%s\n", source_buffer);
+
+                    // Copy the record stub in.
+                    ASSERT(fputs("# BEGIN RECORD STUB\n", temp_f) > 0);
+                    FILE *stub_f = fopen("stubs/x86_64_record.s", "r");
+                    char stub_line[128];
+                    char stub_line_part[128];
+                    while (fgets(stub_line, sizeof(stub_line), stub_f) != NULL) {
+                        ASSERT(strlen(stub_line) > 0);
+                        ASSERT((stub_line[strlen(stub_line) - 1] == '\n') || feof(stub_f));
+
+                        char *stub_s = stub_line;
+                        while (scan_until('?', &stub_s, stub_line_part, sizeof(stub_line_part))) {
+                            ASSERT(fputs(stub_line_part, temp_f) > 0);
+                            ASSERT(skip_exactly("?", &stub_s));
+                            ASSERT(scan_until('?', &stub_s, stub_line_part, sizeof(stub_line_part)));
+                            if (strcmp(stub_line_part, "NONCE") == 0) {
+                                fprintf(temp_f, "%i", 42);
+                            } else if (strcmp(stub_line_part, "TRACE_BLOCK_ID") == 0) {
+                                fprintf(temp_f, "$%i", 99);
+                            } else {
+                                ASSERT(0);
+                            }
+                            ASSERT(skip_exactly("?", &stub_s));
+                        }
+                        ASSERT(fputs(stub_s, temp_f) > 0);
+                    }
+                    fclose(stub_f);
+                    ASSERT(fputs("# END RECORD STUB\n", temp_f) > 0);
+
+                    previous_line_no = -1;
+                    source_buffer[0] = '\0';
+                    goto done_with_line;
+                }
             }
         }
 
-    parsed:
+        // If we come across any use of the r15 register, then the -ffixed-r15
+        // flag didn't work, and we can't continue.
+        ASSERT(strstr(line, "%r15") == NULL);
+
+    done_with_line:
         fputs(line, temp_f);
     }
     fclose(temp_f);

@@ -10,3 +10,5 @@ gcc -O0 -std=c99 -Wall -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
 gcc -Bgcc-bin -fverbose-asm -ffixed-r15 ${@:1}
+
+./a.out
