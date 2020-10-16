@@ -191,7 +191,6 @@ int main(int argc, char **argv) {
 
     // Use gas to assemble our instrumented assembly, (and clean up after
     // ourselves).
-    // TODO
     char command[128] = { 0 };
     snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, temp_fn);
     int ret = system(command);
