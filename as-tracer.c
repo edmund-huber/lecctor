@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define ASSERT(cond) \
     { \
@@ -85,6 +86,13 @@ int main(int argc, char **argv) {
     ASSERT(optind == argc - 1);
     char *input_fn = argv[optind];
 
+    // Set up the temporary file that we will write the instrumented assembly
+    // to, (which we'll later use gas to assemble).
+    char temp_fn[] = "/tmp/XXXXXX";
+    int temp_fd = mkstemp(temp_fn);
+    ASSERT(temp_fd != -1);
+    FILE *temp_f = fdopen(temp_fd, "w");
+
     // The following is the state of the parser, which works in a single pass:
     // On the first line, we are expecting a .file directive.
     int expecting_file_directive = 1;
@@ -92,13 +100,13 @@ int main(int argc, char **argv) {
     int previous_line_no;
     char source_buffer[1024 * 1024];
 
-    FILE *f = fopen(input_fn, "r");
+    FILE *in_file = fopen(input_fn, "r");
     char line[128];
-    while (fgets(line, sizeof(line), f) != NULL) {
+    while (fgets(line, sizeof(line), in_file) != NULL) {
         // We should have sized `line` to the longest single line that we can
         // receive, otherwise our parsing is wrong.
         ASSERT(strlen(line) > 0);
-        ASSERT((line[strlen(line) - 1] == '\n') || feof(f));
+        ASSERT((line[strlen(line) - 1] == '\n') || feof(in_file));
 
         // Try to parse out a .file directive, they look like this:
         // 	.file	"pretzel.c"
@@ -149,7 +157,7 @@ int main(int argc, char **argv) {
             ASSERT(sizeof(source_buffer) > strlen(source_buffer) + strlen(found_line));
             ASSERT(snprintf(
                 source_buffer + strlen(source_buffer), sizeof(source_buffer) - strlen(source_buffer),
-                "%i: %s\n", line_no, found_line
+                "# %i: %s\n", line_no, found_line
             ) < sizeof(source_buffer) - strlen(source_buffer));
 
             previous_line_no = line_no;
@@ -163,7 +171,8 @@ int main(int argc, char **argv) {
         skip_exactly("\t", &s);
         for (int i = 0; x86_64_branching_inst[i] != NULL; i++) {
             if (skip_exactly(x86_64_branching_inst[i], &s)) {
-                printf("TO RECORD HERE:\n>>> %s\n%s\n", source_fn, source_buffer);
+                fprintf(temp_f, "# RECORD: %s\n", source_fn);
+                fprintf(temp_f, "%s\n", source_buffer);
                 previous_line_no = -1;
                 source_buffer[0] = '\0';
                 break;
@@ -171,13 +180,22 @@ int main(int argc, char **argv) {
         }
 
     parsed:
-        printf(" --------- %s", line);
+        fputs(line, temp_f);
     }
+    fclose(temp_f);
 
     // If we run past the end of the assembly source, and we have anything left
     // in 'source_buffer', something has gone really wrong, because any
     // sensible assembly file should end with a 'ret' instruction ..
     ASSERT(strlen(source_buffer) == 0);
 
-    return 0;
+    // Use gas to assemble our instrumented assembly, (and clean up after
+    // ourselves).
+    // TODO
+    char command[128] = { 0 };
+    snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, temp_fn);
+    int ret = system(command);
+    unlink(temp_fn);
+
+    return ret;
 }

@@ -3,7 +3,7 @@
 # .. gotta put this in a makefile ..
 mkdir gcc-bin || true
 # -O0 is default, but also makes assembly easier to parse for us?
-gcc -O0 -std=c99 -Wall as-tracer.c -o gcc-bin/as
+gcc -O0 -std=c99 -Wall -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 
 # -fverbose-asm: since GCC 7.1, gcc can annotate the asm output with which
 # source lines correspond to them.
