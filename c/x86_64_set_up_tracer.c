@@ -2,6 +2,12 @@
 
 #include "assert.h"
 
+// We can't instrument this file, because we haven't set up the tracer
+// datastructures yet!
+asm (
+    "\n# as-tracer-do-not-instrument"
+);
+
 // Note: non-aligned r/w (see: attribute(packed)) could become a problem on
 // other arches.
 typedef struct tracer {

@@ -128,13 +128,12 @@ int main(int argc, char **argv) {
         ASSERT(strlen(line) > 0);
         ASSERT((line[strlen(line) - 1] == '\n') || feof(in_file));
 
-        // If the first line is "# as-tracer-ignore" then we won't instrument
-        // the file.
+        // If we encounter "# as-tracer-do-not-instrument" then we won't instrument
+        // the rest of the file.
         char *s = line;
-        dont_instrument = dont_instrument || (
-            first_line &&
-            skip_exactly("# as-tracer-ignore\n", &s)
-        );
+        dont_instrument =
+            dont_instrument ||
+            skip_exactly("# as-tracer-do-not-instrument\n", &s);
         if (dont_instrument) {
             goto done_with_line;
         }
