@@ -1,16 +1,10 @@
 #include <getopt.h>
+#include <libgen.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#define ASSERT(cond) \
-    { \
-        if (!(cond)) { \
-            printf("ASSERT(%s) failed at %s L%i\n", #cond, __FILE__, __LINE__); \
-            exit(1); \
-        } \
-    }
+#include "assert.h"
 
 #define NAME "as-tracer"
 
@@ -79,12 +73,16 @@ int main(int argc, char **argv) {
         { 0, 0, 0, 0}
     };
     int long_index;
-    while ((c = getopt_long(argc, argv, "o:", long_options, &long_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "I:o:", long_options, &long_index)) != -1) {
         switch (c) {
         case 0:
             if (long_options[long_index].name == long_option_64) {
                 is_64 = 1;
             }
+            break;
+        case 'I':
+            // Only here because we pass -I. to gcc and it passes that flag to
+            // us too.
             break;
         case 'o':
             output_fn = optarg;
@@ -117,6 +115,12 @@ int main(int argc, char **argv) {
     char source_fn[128] = { 0 };
     int previous_line_no;
     char source_buffer[1024 * 1024];
+    enum {
+        UNUSED_TRUST,
+        TRUST_NEXT_LINE,
+        TRUST_THIS_LINE,
+        USED_TRUST
+    } trust = UNUSED_TRUST;
 
     FILE *in_file = fopen(input_fn, "r");
     char line[128];
@@ -172,7 +176,7 @@ int main(int argc, char **argv) {
         if (found_verbose_asm_comment) {
             // If this isn't the same source file called out in the .file
             // directive, then we are extremely confused.
-            ASSERT(strcmp(source_fn, found_source_fn) == 0);
+            ASSERT(strcmp(source_fn, basename(found_source_fn)) == 0);
 
             // If this is the same line number as a verbose-asm comment that
             // we've already seen, just keep going.
@@ -239,12 +243,30 @@ int main(int argc, char **argv) {
             }
         }
 
+        // If we see a comment like "# trust-me-i-know-what-im-doing\n", we'll
+        // allow the next line of assembly to reference r15.
+        s = line;
+        if ((trust == UNUSED_TRUST) &&
+            skip_exactly("\t# trust-me-i-know-what-im-doing\n", &s)) {
+            trust = TRUST_NEXT_LINE;
+        }
+
         // If we come across any use of the r15 register, then the -ffixed-r15
         // flag didn't work, and we can't continue.
-        ASSERT(strstr(line, "%r15") == NULL);
+        ASSERT((trust == TRUST_THIS_LINE) || (strstr(line, "%r15") == NULL));
 
     done_with_line:
         first_line = 0;
+        switch (trust) {
+        case UNUSED_TRUST: break;
+        case TRUST_NEXT_LINE:
+            trust = TRUST_THIS_LINE;
+            break;
+        case TRUST_THIS_LINE:
+            trust = USED_TRUST;
+            break;
+        case USED_TRUST: break;
+        }
         fputs(line, temp_f);
     }
     fclose(temp_f);
