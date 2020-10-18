@@ -252,10 +252,6 @@ int main(int argc, char **argv) {
 
         // If we come across any use of the r15 register, then the -ffixed-r15
         // flag didn't work, and we can't continue.
-        if(!((trust == TRUST_THIS_LINE) || (strstr(line, "%r15") == NULL))) {
-        puts(input_fn);
-        puts(line);
-        }
         ASSERT((trust == TRUST_THIS_LINE) || (strstr(line, "%r15") == NULL));
 
     done_with_line:
