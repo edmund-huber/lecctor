@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     } trust = TRUSTFREE;
 
     FILE *in_file = fopen(input_fn, "r");
-    char line[128];
+    char line[1024];
     while (fgets(line, sizeof(line), in_file) != NULL) {
         ASSERT(strlen(line) > 0);
         ASSERT((line[strlen(line) - 1] == '\n') || feof(in_file));
@@ -209,7 +209,7 @@ int main(int argc, char **argv) {
 
                     // Copy the record stub in.
                     ASSERT(fputs("# BEGIN RECORD STUB\n", temp_f) > 0);
-                    FILE *stub_f = fopen("asm/x86_64_record_stub.s", "r");
+                    FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
                     char stub_line[128];
                     char stub_line_part[128];
                     while (fgets(stub_line, sizeof(stub_line), stub_f) != NULL) {

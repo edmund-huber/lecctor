@@ -9,6 +9,6 @@ gcc -O0 -std=c99 -Wall -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 # source lines correspond to them.
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
-gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt c/x86_64_set_up_tracer.c ${@:1}
+gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt arch/x86_64/tracer_support.c ${@:1}
 
 ./a.out 222 || echo "ERROR!"
