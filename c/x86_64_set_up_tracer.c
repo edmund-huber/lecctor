@@ -14,6 +14,20 @@ asm (
     "\n# as-tracer-do-not-instrument"
 );
 
+#ifdef __x86_64__
+    #define ARCH_RESET_TRACE_POINTER asm volatile ( \
+              "# trust-me-i-know-what-im-doing\n" \
+              "movq %0, %%r15" \
+            : \
+            : "r"(shm->buffer) \
+            : "%r15" \
+        );
+    // We'll let gcc know that we clobbered r15, even though gcc is never going
+    // to be allowed to use it anyway.
+#else
+    #error "unsupported arch"
+#endif
+
 // Note: non-aligned r/w (see: attribute(packed)) could become a problem on
 // other arches.
 typedef struct tracer {
@@ -23,6 +37,8 @@ typedef struct tracer {
     uint8_t tracer_connected;
     uint8_t tracers_turn;
 } __attribute__((packed)) tracer_struct;
+
+tracer_struct *shm;
 
 void set_up_tracer(void) {
     // If this changes, then all the asm code is wrong.
@@ -43,33 +59,30 @@ void set_up_tracer(void) {
         return;
     }
     // .. and mmap it in.
-    tracer_struct *trace;
-    if ((trace = mmap(NULL, sizeof(tracer_struct), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0))
+    if ((shm = mmap(NULL, sizeof(tracer_struct), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0))
         == MAP_FAILED) {
         printf("set_up_tracer: mmap() failed with %s\n", strerror(errno));
         return;
     }
 
     // Initialize the tracer_struct.
-    trace->magic = 0xbeefcafe;
-    for (int i = 0; i < sizeof(trace->buffer) / sizeof(trace->buffer[0]); i++) {
-        trace->buffer[i] = 0;
+    shm->magic = 0xbeefcafe;
+    for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
+        shm->buffer[i] = 0;
     }
-    trace->buffer_sentinel = 0xffffffff;
-    trace->tracer_connected = 0;
-    trace->tracers_turn = 0;
+    shm->buffer_sentinel = 0xffffffff;
+    shm->tracer_connected = 0;
+    shm->tracers_turn = 0;
 
-    // OK, now stuff it in r15.
-    #ifdef __x86_64__
-        asm volatile (
-              "# trust-me-i-know-what-im-doing\n"
-              "movq %0, %%r15"
-            : // No output..
-            : "r"(trace->buffer)
-            : "%r15" // We'll let gcc know that we clobbered r15, even though
-                     // gcc is never going to be allowed to use it anyway.
-        );
-    #else
-        #error "unsupported arch"
-    #endif
+    ARCH_RESET_TRACE_POINTER
+}
+
+void wait_for_tracer(void) {
+    // Clear out the trace buffer.
+    for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
+        shm->buffer[i] = 0;
+    }
+
+    // Reset %r15 to the beginning of the trace buffer.
+    ARCH_RESET_TRACE_POINTER
 }
