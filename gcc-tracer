@@ -3,12 +3,20 @@
 # .. gotta put this in a makefile ..
 mkdir gcc-bin || true
 # -O0 is default, but also makes assembly easier to parse for us?
-gcc -O0 -std=c99 -Wall -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
+gcc -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 
 # -fverbose-asm: since GCC 7.1, gcc can annotate the asm output with which
 # source lines correspond to them.
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
-gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt arch/x86_64/tracer_support.c ${@:1}
+gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
 
-./a.out 222 || echo "ERROR!"
+gcc -lrt -pthread -o tracer tracer.c
+
+./state_and_time 854729 5 &
+PID="$!"
+
+# Give a chance for set_up_tracer() to be run..
+sleep 1
+
+./tracer $PID

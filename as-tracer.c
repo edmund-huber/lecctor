@@ -9,6 +9,7 @@
 #define NAME "as-tracer"
 
 int nonce = 0;
+int trace_block_id = 1;
 
 int skip_exactly(char *to_skip, char **s) {
     // If *s begins with to_skip, progress *s past to_skip and return 1.
@@ -224,7 +225,7 @@ int main(int argc, char **argv) {
                             if (strcmp(stub_line_part, "NONCE") == 0) {
                                 fprintf(temp_f, "%i", nonce);
                             } else if (strcmp(stub_line_part, "TRACE_BLOCK_ID") == 0) {
-                                fprintf(temp_f, "$%i", 99);
+                                fprintf(temp_f, "$%i", trace_block_id++);
                             } else {
                                 ASSERT(0);
                             }

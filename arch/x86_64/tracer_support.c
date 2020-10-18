@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <semaphore.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -28,29 +29,29 @@ asm (
 // We'll let gcc know that we clobbered r15, even though gcc is never going
 // to be allowed to use it anyway.
 
-// Note: non-aligned r/w (see: attribute(packed)) could become a problem on
-// other arches.
+// Change the magic anytime the content or the semantics of this struct change.
+#define TRACER_STRUCT_MAGIC 0xbeefcafe
+
 typedef struct tracer {
     uint32_t magic;
+    sem_t sem;
     uint32_t buffer[32];
     uint32_t buffer_sentinel;
-    uint8_t tracer_connected;
-    uint8_t tracers_turn;
 } __attribute__((packed)) tracer_struct;
 
-tracer_struct *shm;
+volatile tracer_struct *shm;
 
 void set_up_tracer(void) {
-    // Set up a shared memory object:
-    // First, give it a name and create it ..
+    // Set up a shared memory object: pick a unique name and attempt shm_open.
     char shm_name[128] = { '\0' };
     ASSERT(snprintf(shm_name, sizeof(shm_name), "/as-tracer-%i", getpid()) < sizeof(shm_name))
     int fd;
-    if ((fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0666)) == -1) {
+    if ((fd = shm_open(shm_name, O_RDWR | O_CREAT | O_TRUNC, 0666)) == -1) {
         printf("set_up_tracer: shm_open() failed with %s\n", strerror(errno));
         return;
     }
-    // .. size it properly ..
+    // Size it properly (this will also fill it with \0 bytes if the file
+    // didn't exist or was shorter somehow).
     if (ftruncate(fd, sizeof(tracer_struct)) == -1) {
         printf("set_up_tracer: ftruncate() failed with %s\n", strerror(errno));
         return;
@@ -63,18 +64,35 @@ void set_up_tracer(void) {
     }
 
     // Initialize the tracer_struct.
-    shm->magic = 0xbeefcafe;
+    if (sem_init((sem_t *)&(shm->sem), 1, 0) != 0) {
+        printf("set_up_tracer: sem_init() failed with %s\n", strerror(errno));
+        return;
+    }
     for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
         shm->buffer[i] = 0;
     }
     shm->buffer_sentinel = 0xffffffff;
-    shm->tracer_connected = 0;
-    shm->tracers_turn = 0;
+
+    // TODO: read up about compiler and CPU barriers AGAIN
+
+    // Write the magic last so that a tracer attempting to connect before this
+    // point will fail, in case the data was \0's before.
+    shm->magic = TRACER_STRUCT_MAGIC;
 
     ARCH_RESET_TRACE_POINTER
 }
 
 void wait_for_tracer(void) {
+    // Give the tracer (if there is one) a turn by sem_post()ing, which
+    // according to its man page should give any *other* task waiting on the
+    // semaphore a turn when incrementing up from 0.
+    // Side note: shouldn't sem_* functions take a volatile pointer?
+    ASSERT(sem_post((sem_t *)&(shm->sem)) == 0);
+    int ret;
+    while ((ret = sem_wait((sem_t *)&(shm->sem))) != 0) {
+        ASSERT(errno == EINTR);
+    }
+
     // Clear out the trace buffer.
     for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
         shm->buffer[i] = 0;
@@ -83,3 +101,5 @@ void wait_for_tracer(void) {
     // Reset %r15 to the beginning of the trace buffer.
     ARCH_RESET_TRACE_POINTER
 }
+
+// Note: currently not calling sem_destroy at any point.
