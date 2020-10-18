@@ -8,25 +8,25 @@
 
 #include "assert.h"
 
+#ifndef __x86_64__
+    #error "wrong arch"
+#endif
+
 // We can't instrument this file, because we haven't set up the tracer
 // datastructures yet!
 asm (
     "\n# as-tracer-do-not-instrument"
 );
 
-#ifdef __x86_64__
-    #define ARCH_RESET_TRACE_POINTER asm volatile ( \
-              "# trust-me-i-know-what-im-doing\n" \
-              "movq %0, %%r15" \
-            : \
-            : "r"(shm->buffer) \
-            : "%r15" \
-        );
-    // We'll let gcc know that we clobbered r15, even though gcc is never going
-    // to be allowed to use it anyway.
-#else
-    #error "unsupported arch"
-#endif
+#define ARCH_RESET_TRACE_POINTER asm volatile ( \
+          "# trust-me-i-know-what-im-doing\n" \
+          "movq %0, %%r15" \
+        : \
+        : "r"(shm->buffer) \
+        : "%r15" \
+    );
+// We'll let gcc know that we clobbered r15, even though gcc is never going
+// to be allowed to use it anyway.
 
 // Note: non-aligned r/w (see: attribute(packed)) could become a problem on
 // other arches.
