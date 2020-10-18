@@ -11,4 +11,4 @@ gcc -O0 -std=c99 -Wall -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 # using certain registers in the generated asm.
 gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt asm/x86_64_wait_for_tracer.s c/x86_64_set_up_tracer.c ${@:1}
 
-./a.out
+./a.out 222 || echo "ERROR!"

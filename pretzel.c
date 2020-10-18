@@ -19,9 +19,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int i = atoi(argv[1]);
-    i += 97;
-    pretzel(i);
+    for (int j = 0; j < 100; j++) {
+        int i = atoi(argv[1]);
+        i += 97;
+        pretzel(i);
+    }
 
     return 0;
 }
