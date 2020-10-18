@@ -41,9 +41,6 @@ typedef struct tracer {
 tracer_struct *shm;
 
 void set_up_tracer(void) {
-    // If this changes, then all the asm code is wrong.
-    ASSERT(sizeof(tracer_struct) == 138);
-
     // Set up a shared memory object:
     // First, give it a name and create it ..
     char shm_name[128] = { '\0' };
