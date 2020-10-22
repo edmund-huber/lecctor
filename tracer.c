@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "assert.h"
@@ -19,7 +20,9 @@
 
 typedef struct tracer {
     uint32_t magic;
-    sem_t sem;
+    sem_t tracer_ready;
+    sem_t tracers_turn;
+    sem_t tracer_done;
     uint32_t buffer[32];
     uint32_t buffer_sentinel;
 } __attribute__((packed)) tracer_struct;
@@ -50,7 +53,7 @@ int main(int argc, char **argv) {
     }
 
     // mmap it in.
-    volatile tracer_struct *shm;
+    tracer_struct *shm;
     if ((shm = mmap(NULL, sizeof(tracer_struct), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0))
         == MAP_FAILED) {
         fprintf(stderr, "mmap() failed with %s\n", strerror(errno));
@@ -63,12 +66,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    ASSERT(sem_post(&(shm->tracer_ready)) == 0);
     while (1) {
-        // Try to grab the semaphore.
-        struct timespec ts = { 0 };
-        ts.tv_sec = 1;
+        // Wait for our turn.
+        struct timespec timeout;
+        ASSERT(clock_gettime(CLOCK_REALTIME, &timeout) == 0);
+        timeout.tv_sec += 1;
         int ret;
-        while ((ret = sem_timedwait((sem_t *)&(shm->sem), &ts)) != 0) {
+        while ((ret = sem_timedwait(&(shm->tracers_turn), &timeout)) == -1) {
             ASSERT((errno == EINTR) || (errno = ETIMEDOUT));
 
             // Check if the tracee is alive. If it isn't, we're done.
@@ -79,13 +84,17 @@ int main(int argc, char **argv) {
         }
 
         // Read out the trace data! The trace buffer must be full, otherwise we
-        // wouldn't have gotten the semaphore.
+        // wouldn't have been woken up.
+        printf("trace:");
         for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
-            printf("%i\n", shm->buffer[i]);
+            printf(" [%i]%i", i, shm->buffer[i]);
+            ASSERT(shm->buffer[i] != 0);
         }
+        puts("");
 
-        // Release the semaphore.
-        ASSERT(sem_post((sem_t *)&(shm->sem)) == 0);
+        // Let the tracee know we're done.
+        ASSERT(sem_post(&(shm->tracer_ready)) == 0);
+        ASSERT(sem_post(&(shm->tracer_done)) == 0);
     }
 tracee_dead:
 

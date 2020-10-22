@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "assert.h"
@@ -34,12 +35,14 @@ asm (
 
 typedef struct tracer {
     uint32_t magic;
-    sem_t sem;
+    sem_t tracer_ready;
+    sem_t tracers_turn;
+    sem_t tracer_done;
     uint32_t buffer[32];
     uint32_t buffer_sentinel;
 } __attribute__((packed)) tracer_struct;
 
-volatile tracer_struct *shm;
+tracer_struct *shm;
 
 void set_up_tracer(void) {
     // Set up a shared memory object: pick a unique name and attempt shm_open.
@@ -64,10 +67,19 @@ void set_up_tracer(void) {
     }
 
     // Initialize the tracer_struct.
-    if (sem_init((sem_t *)&(shm->sem), 1, 0) != 0) {
+    if (sem_init(&(shm->tracer_ready), 1, 0) != 0) {
         printf("set_up_tracer: sem_init() failed with %s\n", strerror(errno));
         return;
     }
+    if (sem_init(&(shm->tracers_turn), 1, 0) != 0) {
+        printf("set_up_tracer: sem_init() failed with %s\n", strerror(errno));
+        return;
+    }
+    if (sem_init(&(shm->tracer_done), 1, 0) != 0) {
+        printf("set_up_tracer: sem_init() failed with %s\n", strerror(errno));
+        return;
+    }
+
     for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
         shm->buffer[i] = 0;
     }
@@ -83,18 +95,24 @@ void set_up_tracer(void) {
 }
 
 void wait_for_tracer(void) {
-    // Give the tracer (if there is one) a turn by sem_post()ing, which
-    // according to its man page should give any *other* task waiting on the
-    // semaphore a turn when incrementing up from 0.
-    // Side note: shouldn't sem_* functions take a volatile pointer?
-    ASSERT(sem_post((sem_t *)&(shm->sem)) == 0);
-    int ret;
-    while ((ret = sem_wait((sem_t *)&(shm->sem))) != 0) {
-        ASSERT(errno == EINTR);
+    // If the tracer is ready ..
+    if (sem_trywait(&(shm->tracer_ready)) == 0) {
+        // .. give it a chance to do its thing.
+        ASSERT(sem_post(&(shm->tracers_turn)) == 0);
+        struct timespec timeout;
+        ASSERT(clock_gettime(CLOCK_REALTIME, &timeout) == 0);
+        timeout.tv_sec += 1;
+        if (sem_timedwait(&(shm->tracer_done), &timeout) == -1) {
+            ASSERT((errno == ETIMEDOUT) || (errno == EINTR));
+            sem_trywait(&(shm->tracers_turn));
+        }
+    } else {
+        ASSERT(errno == EAGAIN);
     }
 
     // Clear out the trace buffer.
     for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
+        ASSERT(shm->buffer[i] != 0);
         shm->buffer[i] = 0;
     }
 
