@@ -9,6 +9,12 @@ gcc -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
 # source lines correspond to them.
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
+export GCC_TRACER_ID="$(mktemp)"
+echo 1 > "$GCC_TRACER_ID"
+export GCC_TRACER_DUMP="dump"
+touch "$GCC_TRACER_DUMP"
+export GCC_TRACER_FLOCK="$(mktemp)"
+touch "$GCC_TRACER_FLOCK"
 gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
 
 gcc -lrt -pthread -o tracer tracer.c
@@ -19,4 +25,4 @@ PID="$!"
 # Give a chance for set_up_tracer() to be run..
 sleep 1
 
-./tracer $PID
+./tracer "$PID" "$GCC_TRACER_DUMP"

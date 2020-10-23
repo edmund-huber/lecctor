@@ -1,7 +1,10 @@
+#include <fcntl.h>
 #include <getopt.h>
 #include <libgen.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include "assert.h"
@@ -9,7 +12,6 @@
 #define NAME "as-tracer"
 
 int nonce = 0;
-int trace_block_id = 1;
 
 int skip_exactly(char *to_skip, char **s) {
     // If *s begins with to_skip, progress *s past to_skip and return 1.
@@ -102,6 +104,28 @@ int main(int argc, char **argv) {
     ASSERT(optind == argc - 1);
     char *input_fn = argv[optind];
 
+    // Only one instance of as-tracer can run at a time -- for correctness,
+    // because otherwise trace block ids would overlap.
+    char *flock_fn;
+    ASSERT((flock_fn = getenv("GCC_TRACER_FLOCK")) != NULL);
+    int flock_fd;
+    ASSERT((flock_fd = open(flock_fn, O_RDONLY)) != -1);
+    ASSERT(flock(flock_fd, LOCK_EX) == 0);
+
+    // GCC_TRACER_ID is a path we can use for storing the last available trace
+    // block id.
+    char *id_fn;
+    ASSERT((id_fn = getenv("GCC_TRACER_ID")) != NULL);
+    FILE *id_f;
+    ASSERT((id_f = fopen(id_fn, "r")) != NULL);
+    uint32_t trace_block_id;
+    ASSERT(fscanf(id_f, "%u", &trace_block_id) == 1);
+
+    // GCC_TRACER_DUMP is a path for storing all the id -> line correspondencies.
+    char *dump_fn;
+    ASSERT((dump_fn = getenv("GCC_TRACER_DUMP")) != NULL);
+    FILE *dump_f = fopen(dump_fn, "w");
+
     // Set up the temporary file that we will write the instrumented assembly
     // to, (which we'll later use gas to assemble).
     char temp_fn[] = "/tmp/XXXXXX";
@@ -110,7 +134,6 @@ int main(int argc, char **argv) {
     FILE *temp_f = fdopen(temp_fd, "w");
 
     // The following is the state of the parser, which works in a single pass:
-    // On the first line, we are expecting a .file directive.
     int first_line = 1;
     int do_instrument = 1;
     char source_fn[128] = { 0 };
@@ -208,6 +231,17 @@ int main(int argc, char **argv) {
                     fprintf(temp_f, "# WANT TO RECORD: %s\n", source_fn);
                     fputs(source_buffer, temp_f);
 
+                    // Also copy this over to the dumpfile.
+                    int newlines_count = 0;
+                    for (int j = 0; j < strlen(source_buffer); j++)
+                        if (source_buffer[j] == '\n')
+                            newlines_count++;
+                    fprintf(dump_f, "%u %s %i\n%s",
+                        trace_block_id,
+                        source_fn, // TODO really should escape this.
+                        newlines_count,
+                        source_buffer);
+
                     // Copy the record stub in.
                     ASSERT(fputs("# BEGIN RECORD STUB\n", temp_f) > 0);
                     FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
@@ -281,6 +315,15 @@ int main(int argc, char **argv) {
     snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, temp_fn);
     int ret = system(command);
     unlink(temp_fn);
+
+    // Write in the unused, latest trace_block_id.
+    ASSERT((id_f = fopen(id_fn, "w")) != NULL);
+    fprintf(id_f, "%u\n", trace_block_id);
+    fclose(id_f);
+
+    // Unlock GCC_TRACER_FLOCK so that other instances of as-tracer can run
+    // now.
+    ASSERT(flock(flock_fd, LOCK_UN) == 0);
 
     return ret;
 }

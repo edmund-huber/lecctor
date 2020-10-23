@@ -28,12 +28,52 @@ typedef struct tracer {
 } __attribute__((packed)) tracer_struct;
 
 int main(int argc, char **argv) {
-    // Take the pid to trace on the command line.
-    if (argc != 2) {
-        fputs("usage: tracer <pid>\n", stderr);
+    if (argc != 3) {
+        fputs("usage: tracer <pid> <dumpfile>\n", stderr);
         return 1;
     }
     int tracee_pid = atoi(argv[1]);
+    char *dump_fn = argv[2];
+
+    // Read in the dumpfile, so that we can show source lines instead of just
+    // integers. It is formatted like this:
+    // $ID $FILENAME $NUMBER_OF_LINES
+    // $LINE1
+    // $LINE2
+    // ..etc..
+    // TODO: this lookup structure is a joke, efficiency-wise.
+    typedef struct lookup {
+        uint32_t id;
+        char fn[128];
+        char source[1024];
+        struct lookup *next;
+    } lookup_t;
+    lookup_t *lookup = NULL;
+    FILE *dump_f = fopen(dump_fn, "r");
+    goto prime_eof;
+    while (!feof(dump_f)) {
+        lookup_t *new_lookup = malloc(sizeof(lookup_t));
+        int lines;
+        ASSERT(fscanf(dump_f, "%u %s %i\n", &(new_lookup->id), &(new_lookup->fn), &lines) == 3);
+        new_lookup->source[0] = '\0';
+        int len = 0;
+        for (int i = 0; i < lines; i++) {
+            ASSERT(fgets(
+                new_lookup->source + len,
+                sizeof(new_lookup->source) - len,
+                dump_f
+                ) != NULL);
+            len = strlen(new_lookup->source);
+            ASSERT(new_lookup->source[len - 1] == '\n');
+        }
+        new_lookup->next = lookup;
+        lookup = new_lookup;
+        int c;
+    prime_eof:
+        c = fgetc(dump_f);
+        ungetc(c, dump_f);
+    }
+    fclose(dump_f);
 
     // TODO: shm_name construction is copypasta.
     // Open the associated shm.
@@ -85,12 +125,20 @@ int main(int argc, char **argv) {
 
         // Read out the trace data! The trace buffer must be full, otherwise we
         // wouldn't have been woken up.
-        printf("trace:");
         for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
-            printf(" [%i]%i", i, shm->buffer[i]);
             ASSERT(shm->buffer[i] != 0);
+
+            // Find the corresponding line(s) and print them.
+            int found = 0;
+            for (lookup_t *p = lookup; p != NULL; p = p->next) {
+                if (p->id == shm->buffer[i]) {
+                    printf("________ %s:\n%s", p->fn, p->source);
+                    found = 1;
+                    break;
+                }
+            }
+            ASSERT(found);
         }
-        puts("");
 
         // Let the tracee know we're done.
         ASSERT(sem_post(&(shm->tracer_ready)) == 0);
