@@ -15,8 +15,7 @@ export GCC_TRACER_DUMP="dump"
 touch "$GCC_TRACER_DUMP"
 export GCC_TRACER_FLOCK="$(mktemp)"
 touch "$GCC_TRACER_FLOCK"
-gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
-
+gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -Xassembler -g -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
 gcc -lrt -pthread -o tracer tracer.c
 
 ./state_and_time 854729 5 &

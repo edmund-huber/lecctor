@@ -68,6 +68,7 @@ char *x86_64_branching_inst[] = {
 int main(int argc, char **argv) {
     // Parse the command line.
     char *output_fn = NULL;
+    int debug = 0;
     int is_64 = 0;
     int c;
     char *long_option_64 = "64";
@@ -76,12 +77,15 @@ int main(int argc, char **argv) {
         { 0, 0, 0, 0}
     };
     int long_index;
-    while ((c = getopt_long(argc, argv, "I:o:", long_options, &long_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "gI:o:", long_options, &long_index)) != -1) {
         switch (c) {
         case 0:
             if (long_options[long_index].name == long_option_64) {
                 is_64 = 1;
             }
+            break;
+        case 'g':
+            debug = 1;
             break;
         case 'I':
             // Only here because we pass -I. to gcc and it passes that flag to
@@ -228,7 +232,7 @@ int main(int argc, char **argv) {
                 if (skip_exactly(x86_64_branching_inst[i], &s)) {
                     // Print what we'd like to record directly to the assembly
                     // -- for debugging purposes.
-                    fprintf(temp_f, "# WANT TO RECORD: %s\n", source_fn);
+                    fprintf(temp_f, "######## WANT TO RECORD: %s\n", source_fn);
                     fputs(source_buffer, temp_f);
 
                     // Also copy this over to the dumpfile.
@@ -243,7 +247,7 @@ int main(int argc, char **argv) {
                         source_buffer);
 
                     // Copy the record stub in.
-                    ASSERT(fputs("# BEGIN RECORD STUB\n", temp_f) > 0);
+                    ASSERT(fputs("######## BEGIN RECORD STUB\n", temp_f) > 0);
                     FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
                     char stub_line[128];
                     char stub_line_part[128];
@@ -269,7 +273,7 @@ int main(int argc, char **argv) {
                     }
                     nonce++;
                     fclose(stub_f);
-                    ASSERT(fputs("# END RECORD STUB\n", temp_f) > 0);
+                    ASSERT(fputs("######## END RECORD STUB\n", temp_f) > 0);
 
                     previous_line_no = -1;
                     source_buffer[0] = '\0';
@@ -309,12 +313,16 @@ int main(int argc, char **argv) {
     // sensible assembly file should end with a 'ret' instruction ..
     ASSERT(strlen(source_buffer) == 0);
 
-    // Use gas to assemble our instrumented assembly, (and clean up after
-    // ourselves).
+    // Use gas to assemble our instrumented assembly.
     char command[128] = { 0 };
     snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, temp_fn);
     int ret = system(command);
-    unlink(temp_fn);
+
+    // Only clean up after ourselves if the debug flag isn't on.
+    if (debug)
+        printf("as-tracer: input %s, output %s\n", input_fn, temp_fn);
+    else
+        unlink(temp_fn);
 
     // Write in the unused, latest trace_block_id.
     ASSERT((id_f = fopen(id_fn, "w")) != NULL);
