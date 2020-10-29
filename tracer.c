@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "assert.h"
+#include "decoder.h"
 
 // TODO, following is also copypasta.
 
@@ -16,7 +17,6 @@
 #define TRACER_STRUCT_MAGIC 0xbeefcafe
 
 #include <semaphore.h>
-#include <stdint.h>
 
 typedef struct tracer {
     uint32_t magic;
@@ -29,51 +29,13 @@ typedef struct tracer {
 
 int main(int argc, char **argv) {
     if (argc != 3) {
-        fputs("usage: tracer <pid> <dumpfile>\n", stderr);
+        fputs("usage: tracer <pid> <decoderfile>\n", stderr);
         return 1;
     }
     int tracee_pid = atoi(argv[1]);
-    char *dump_fn = argv[2];
+    char *decoder_fn = argv[2];
 
-    // Read in the dumpfile, so that we can show source lines instead of just
-    // integers. It is formatted like this:
-    // $ID $FILENAME $NUMBER_OF_LINES
-    // $LINE1
-    // $LINE2
-    // ..etc..
-    // TODO: this lookup structure is a joke, efficiency-wise.
-    typedef struct lookup {
-        uint32_t id;
-        char fn[128];
-        char source[1024];
-        struct lookup *next;
-    } lookup_t;
-    lookup_t *lookup = NULL;
-    FILE *dump_f = fopen(dump_fn, "r");
-    goto prime_eof;
-    while (!feof(dump_f)) {
-        lookup_t *new_lookup = malloc(sizeof(lookup_t));
-        int lines;
-        ASSERT(fscanf(dump_f, "%u %s %i\n", &(new_lookup->id), &(new_lookup->fn), &lines) == 3);
-        new_lookup->source[0] = '\0';
-        int len = 0;
-        for (int i = 0; i < lines; i++) {
-            ASSERT(fgets(
-                new_lookup->source + len,
-                sizeof(new_lookup->source) - len,
-                dump_f
-                ) != NULL);
-            len = strlen(new_lookup->source);
-            ASSERT(new_lookup->source[len - 1] == '\n');
-        }
-        new_lookup->next = lookup;
-        lookup = new_lookup;
-        int c;
-    prime_eof:
-        c = fgetc(dump_f);
-        ungetc(c, dump_f);
-    }
-    fclose(dump_f);
+    decoder_t *decoder = decoder_load(decoder_fn, 0);
 
     // TODO: shm_name construction is copypasta.
     // Open the associated shm.
@@ -106,6 +68,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    id_t line_just_traced = 0;
     ASSERT(sem_post(&(shm->tracer_ready)) == 0);
     while (1) {
         // Wait for our turn.
@@ -129,15 +92,18 @@ int main(int argc, char **argv) {
             ASSERT(shm->buffer[i] != 0);
 
             // Find the corresponding line(s) and print them.
-            int found = 0;
-            for (lookup_t *p = lookup; p != NULL; p = p->next) {
-                if (p->id == shm->buffer[i]) {
-                    printf("________ %s:\n%s", p->fn, p->source);
-                    found = 1;
-                    break;
+            chunk_data_t *chunk_data = decoder_lookup_chunk(decoder, shm->buffer[i]);
+            ASSERT(chunk_data != NULL);
+            for (int i = 0; i < chunk_data->line_id_count; i++) {
+                id_t line_id = chunk_data->line_ids[i];
+                if (line_id != line_just_traced) {
+                    line_data_t *line_data = decoder_lookup_line(decoder, line_id);
+                    ASSERT(line_data != NULL);
+                    printf("%s L%i: %s\n", line_data->path, line_data->line_no, line_data->content);
+                    line_just_traced = line_id;
                 }
             }
-            ASSERT(found);
+            // TODO also collapse like-lines here.
         }
 
         // Let the tracee know we're done.
@@ -145,6 +111,10 @@ int main(int argc, char **argv) {
         ASSERT(sem_post(&(shm->tracer_done)) == 0);
     }
 tracee_dead:
+
+    // Even though the tracee's dead, and they can't flip the semaphore on for
+    // us, we can still poke through the leftovers in the buffer.
+    // TODO
 
     return 0;
 }

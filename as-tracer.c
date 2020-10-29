@@ -1,53 +1,17 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <libgen.h>
-#include <stdint.h>
+#include <linux/limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
 #include <unistd.h>
 
 #include "assert.h"
-
-#define NAME "as-tracer"
+#include "decoder.h"
+#include "scanning.h"
 
 int nonce = 0;
-
-int skip_exactly(char *to_skip, char **s) {
-    // If *s begins with to_skip, progress *s past to_skip and return 1.
-    if (strncmp(*s, to_skip, strlen(to_skip)) == 0) {
-        *s += strlen(to_skip);
-        return 1;
-    }
-    // Else return 0.
-    return 0;
-}
-
-int scan_until(char c, char **s, char *scanned, int scanned_sz) {
-    char *original_s = *s;
-    // Until we've reached the end of *s,
-    int scanned_off = 0;
-    scanned[0] = '\0';
-    for (; **s != '\0'; *s += 1) {
-        // .. if we found c, then success.
-        if (**s == c) {
-            return 1;
-        }
-        // Store the characters we're skipping in scanned.
-        if (scanned != NULL) {
-            if (scanned_off + 1 == scanned_sz) {
-                return 0;
-            }
-            scanned[scanned_off] = **s;
-            scanned[scanned_off + 1] = '\0';
-            scanned_off++;
-        }
-    }
-    // If we did not find c in *s, then we need to restore *s to where it was
-    // at the start.
-    *s = original_s;
-    return 0;
-}
 
 // Reference: https://en.wikibooks.org/wiki/X86_Assembly/Control_Flow .
 char *x86_64_branching_inst[] = {
@@ -67,6 +31,7 @@ char *x86_64_branching_inst[] = {
 
 int main(int argc, char **argv) {
     // Parse the command line.
+    char *decoder_fn = NULL;
     char *output_fn = NULL;
     int debug = 0;
     int is_64 = 0;
@@ -77,12 +42,15 @@ int main(int argc, char **argv) {
         { 0, 0, 0, 0}
     };
     int long_index;
-    while ((c = getopt_long(argc, argv, "gI:o:", long_options, &long_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "d:gI:o:", long_options, &long_index)) != -1) {
         switch (c) {
         case 0:
             if (long_options[long_index].name == long_option_64) {
                 is_64 = 1;
             }
+            break;
+        case 'd':
+            decoder_fn = optarg;
             break;
         case 'g':
             debug = 1;
@@ -101,34 +69,13 @@ int main(int argc, char **argv) {
 
     // Check that we got the flags we were expecting.
     ASSERT(is_64);
+    ASSERT(decoder_fn != NULL);
     ASSERT(output_fn != NULL);
 
     // In addition to flags, we take one more option: the path to the assembler
     // file.
     ASSERT(optind == argc - 1);
     char *input_fn = argv[optind];
-
-    // Only one instance of as-tracer can run at a time -- for correctness,
-    // because otherwise trace block ids would overlap.
-    char *flock_fn;
-    ASSERT((flock_fn = getenv("GCC_TRACER_FLOCK")) != NULL);
-    int flock_fd;
-    ASSERT((flock_fd = open(flock_fn, O_RDONLY)) != -1);
-    ASSERT(flock(flock_fd, LOCK_EX) == 0);
-
-    // GCC_TRACER_ID is a path we can use for storing the last available trace
-    // block id.
-    char *id_fn;
-    ASSERT((id_fn = getenv("GCC_TRACER_ID")) != NULL);
-    FILE *id_f;
-    ASSERT((id_f = fopen(id_fn, "r")) != NULL);
-    uint32_t trace_block_id;
-    ASSERT(fscanf(id_f, "%u", &trace_block_id) == 1);
-
-    // GCC_TRACER_DUMP is a path for storing all the id -> line correspondencies.
-    char *dump_fn;
-    ASSERT((dump_fn = getenv("GCC_TRACER_DUMP")) != NULL);
-    FILE *dump_f = fopen(dump_fn, "w");
 
     // Set up the temporary file that we will write the instrumented assembly
     // to, (which we'll later use gas to assemble).
@@ -138,11 +85,12 @@ int main(int argc, char **argv) {
     FILE *temp_f = fdopen(temp_fd, "w");
 
     // The following is the state of the parser, which works in a single pass:
+    decoder_t *decoder = decoder_load(decoder_fn, 1);
     int first_line = 1;
     int do_instrument = 1;
-    char source_fn[128] = { 0 };
-    int previous_line_no;
-    char source_buffer[1024 * 1024];
+    #define TRACE_CHUNK_MAX_LEN 1000
+    id_t trace_chunk[TRACE_CHUNK_MAX_LEN] = { 0 };
+    int trace_chunk_len = 0;
     enum {
         TRUSTFREE,
         TRUST_NEXT_LINE,
@@ -150,6 +98,7 @@ int main(int argc, char **argv) {
     } trust = TRUSTFREE;
 
     FILE *in_file = fopen(input_fn, "r");
+    ASSERT(in_file != NULL);
     char line[1024];
     while (fgets(line, sizeof(line), in_file) != NULL) {
         ASSERT(strlen(line) > 0);
@@ -158,14 +107,14 @@ int main(int argc, char **argv) {
         // Try to parse out a .file directive, they look like this:
         // 	.file	"pretzel.c"
         char *s = line;
+        char source_fn[PATH_MAX];
         int found_file_directive =
             skip_exactly("\t.file\t\"", &s) &&
-            scan_until('"', &s, source_fn, sizeof(source_fn)) &&
+            scan_until_any("\"", &s, source_fn, sizeof(source_fn)) &&
             skip_exactly("\"\n", &s) &&
             *s == '\0';
         if (found_file_directive) {
-            previous_line_no = -1;
-            source_buffer[0] = '\0';
+            decoder_set_current_file(decoder, source_fn);
             goto done_with_line;
         } else {
             // Expecting the .file directive on the first line.
@@ -180,75 +129,63 @@ int main(int argc, char **argv) {
         else if (skip_exactly("# as-tracer-do-not-instrument\n", &s))
             do_instrument = 0;
         if (!do_instrument) {
-            source_buffer[0] = '\0';
+            trace_chunk_len = 0;
         }
 
         // Try to parse out a comment generated by -fverbose-asm, they look
         // like this:
         // # pretzel.c:6:     if (argc != 2) {
         s = line;
-        char found_source_fn[128] = { 0 };
+        char found_source_fn[PATH_MAX] = { 0 };
         char found_line_no[32] = { 0 };
         char found_line[1024] = { 0 };
         int found_verbose_asm_comment =
             skip_exactly("# ", &s) &&
-            scan_until(':', &s, found_source_fn, sizeof(found_source_fn)) &&
+            scan_until_any(":", &s, found_source_fn, sizeof(found_source_fn)) &&
             skip_exactly(":", &s) &&
-            scan_until(':', &s, found_line_no, sizeof(found_line_no)) &&
+            scan_until_any(":", &s, found_line_no, sizeof(found_line_no)) &&
             skip_exactly(":", &s) &&
-            scan_until('\n', &s, found_line, sizeof(found_line)) &&
+            scan_until_any("\n", &s, found_line, sizeof(found_line)) &&
             skip_exactly("\n", &s) &&
             *s == '\0';
         if (found_verbose_asm_comment) {
             // If this isn't the same source file called out in the .file
             // directive, then we are extremely confused.
-            ASSERT(strcmp(source_fn, basename(found_source_fn)) == 0);
+            ASSERT(strcmp(decoder->current_file_name, basename(found_source_fn)) == 0);
 
-            // If this is the same line number as a verbose-asm comment that
-            // we've already seen, just keep going.
-            int line_no = atoi(found_line_no);
-            if (line_no == previous_line_no)
-                goto done_with_line;
-
-            // Otherwise, let's add it to source_buffer.
             if (do_instrument) {
-                ASSERT(sizeof(source_buffer) > strlen(source_buffer) + strlen(found_line));
-                ASSERT(snprintf(
-                    source_buffer + strlen(source_buffer), sizeof(source_buffer) - strlen(source_buffer),
-                    "# %i: %s\n", line_no, found_line
-                ) < sizeof(source_buffer) - strlen(source_buffer));
+                int line_no = atoi(found_line_no);
+                id_t line_id = decoder_add_line(decoder, line_no, found_line);
+
+                // If we just saw this line, don't bother adding to the
+                // trace_chunk.
+                if ((trace_chunk_len == 0) || (trace_chunk[trace_chunk_len - 1] != line_id)) {
+                    trace_chunk[trace_chunk_len++] = line_id;
+                    ASSERT(trace_chunk_len < TRACE_CHUNK_MAX_LEN);
+                }
             }
 
-            previous_line_no = line_no;
             goto done_with_line;
         }
 
-        // If we come across a jmp, call, ret, (etc) -- any instruction that
-        // causes the instruction pointer to change -- let's insert the "record
-        // stub".
+        // We need to record and reset the trace_chunk, using the arch-specific
+        // asm "record stub", whenever we come across ..
+        //   * a "LABEL:" because if execution jumps here, it won't have
+        //     executed the previous lines.
+        //   * any of the arch-specific jmp, call, ret, (etc) instructions that
+        //     (might) change the instruction pointer, since this (might be) our
+        //     last chance to record what has already been executed.
         s = line;
         if (do_instrument && skip_exactly("\t", &s)) {
             for (int i = 0; x86_64_branching_inst[i] != NULL; i++) {
                 if (skip_exactly(x86_64_branching_inst[i], &s)) {
-                    // Print what we'd like to record directly to the assembly
-                    // -- for debugging purposes.
-                    fprintf(temp_f, "######## WANT TO RECORD: %s\n", source_fn);
-                    fputs(source_buffer, temp_f);
+                    // Record the trace chunk.
+                    id_t chunk_id = decoder_add_chunk(decoder, trace_chunk, trace_chunk_len);
 
-                    // Also copy this over to the dumpfile.
-                    int newlines_count = 0;
-                    for (int j = 0; j < strlen(source_buffer); j++)
-                        if (source_buffer[j] == '\n')
-                            newlines_count++;
-                    fprintf(dump_f, "%u %s %i\n%s",
-                        trace_block_id,
-                        source_fn, // TODO really should escape this.
-                        newlines_count,
-                        source_buffer);
-
-                    // Copy the record stub in.
-                    ASSERT(fputs("######## BEGIN RECORD STUB\n", temp_f) > 0);
+                    // Copy the record stub over, with values substituted in.
+                    ASSERT(fputs("######## RECORD\n", temp_f) > 0);
                     FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
+                    ASSERT(stub_f != NULL);
                     char stub_line[128];
                     char stub_line_part[128];
                     while (fgets(stub_line, sizeof(stub_line), stub_f) != NULL) {
@@ -256,14 +193,14 @@ int main(int argc, char **argv) {
                         ASSERT((stub_line[strlen(stub_line) - 1] == '\n') || feof(stub_f));
 
                         char *stub_s = stub_line;
-                        while (scan_until('?', &stub_s, stub_line_part, sizeof(stub_line_part))) {
+                        while (scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part))) {
                             ASSERT(fputs(stub_line_part, temp_f) > 0);
                             ASSERT(skip_exactly("?", &stub_s));
-                            ASSERT(scan_until('?', &stub_s, stub_line_part, sizeof(stub_line_part)));
+                            ASSERT(scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part)));
                             if (strcmp(stub_line_part, "NONCE") == 0) {
                                 fprintf(temp_f, "%i", nonce);
-                            } else if (strcmp(stub_line_part, "TRACE_BLOCK_ID") == 0) {
-                                fprintf(temp_f, "$%i", trace_block_id++);
+                            } else if (strcmp(stub_line_part, "TRACE_CHUNK_ID") == 0) {
+                                fprintf(temp_f, "$%i", chunk_id);
                             } else {
                                 ASSERT(0);
                             }
@@ -273,10 +210,9 @@ int main(int argc, char **argv) {
                     }
                     nonce++;
                     fclose(stub_f);
-                    ASSERT(fputs("######## END RECORD STUB\n", temp_f) > 0);
+                    ASSERT(fputs("######## END\n", temp_f) > 0);
 
-                    previous_line_no = -1;
-                    source_buffer[0] = '\0';
+                    trace_chunk_len = 0;
                     goto done_with_line;
                 }
             }
@@ -309,9 +245,9 @@ int main(int argc, char **argv) {
     fclose(temp_f);
 
     // If we run past the end of the assembly source, and we have anything left
-    // in 'source_buffer', something has gone really wrong, because any
+    // in 'trace_chunk', something has gone really wrong, because any
     // sensible assembly file should end with a 'ret' instruction ..
-    ASSERT(strlen(source_buffer) == 0);
+    ASSERT(trace_chunk_len == 0);
 
     // Use gas to assemble our instrumented assembly.
     char command[128] = { 0 };
@@ -320,18 +256,9 @@ int main(int argc, char **argv) {
 
     // Only clean up after ourselves if the debug flag isn't on.
     if (debug)
-        printf("as-tracer: input %s, output %s\n", input_fn, temp_fn);
+        printf("as-tracer done: input %s, output %s\n", input_fn, temp_fn);
     else
         unlink(temp_fn);
-
-    // Write in the unused, latest trace_block_id.
-    ASSERT((id_f = fopen(id_fn, "w")) != NULL);
-    fprintf(id_f, "%u\n", trace_block_id);
-    fclose(id_f);
-
-    // Unlock GCC_TRACER_FLOCK so that other instances of as-tracer can run
-    // now.
-    ASSERT(flock(flock_fd, LOCK_UN) == 0);
 
     return ret;
 }

@@ -3,20 +3,16 @@
 # .. gotta put this in a makefile ..
 mkdir gcc-bin || true
 # -O0 is default, but also makes assembly easier to parse for us?
-gcc -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 as-tracer.c -o gcc-bin/as
+gcc -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 -D_DEFAULT_SOURCE as-tracer.c decoder.c scanning.c -o gcc-bin/as
 
 # -fverbose-asm: since GCC 7.1, gcc can annotate the asm output with which
 # source lines correspond to them.
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
-export GCC_TRACER_ID="$(mktemp)"
-echo 1 > "$GCC_TRACER_ID"
-export GCC_TRACER_DUMP="dump"
-touch "$GCC_TRACER_DUMP"
-export GCC_TRACER_FLOCK="$(mktemp)"
-touch "$GCC_TRACER_FLOCK"
-gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -Xassembler -g -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
-gcc -lrt -pthread -o tracer tracer.c
+rm decoder || true
+touch decoder
+gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -Xassembler -d -Xassembler decoder -Xassembler -g -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
+gcc -lrt -pthread -o tracer tracer.c decoder.c scanning.c
 
 ./state_and_time 854729 5 &
 PID="$!"
@@ -24,4 +20,4 @@ PID="$!"
 # Give a chance for set_up_tracer() to be run..
 sleep 1
 
-./tracer "$PID" "$GCC_TRACER_DUMP"
+./tracer "$PID" decoder
