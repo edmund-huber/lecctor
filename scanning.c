@@ -16,7 +16,8 @@ int scan_until_any(char *any_c, char **s, char *scanned, int scanned_sz) {
     char *original_s = *s;
     // Until we've reached the end of *s,
     int scanned_off = 0;
-    scanned[0] = '\0';
+    if (scanned != NULL)
+        scanned[0] = '\0';
     for (; **s != '\0'; *s += 1) {
         // .. if we found any of the characters in any_c, then success.
         if (strchr(any_c, **s)) {

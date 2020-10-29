@@ -172,50 +172,64 @@ int main(int argc, char **argv) {
         // asm "record stub", whenever we come across ..
         //   * a "LABEL:" because if execution jumps here, it won't have
         //     executed the previous lines.
+        s = line;
+        int found_label =
+            skip_exactly(".", &s) &&
+            scan_until_any(":", &s, NULL, 0) &&
+            skip_exactly(":\n\0", &s);
+
+        // (continued)
         //   * any of the arch-specific jmp, call, ret, (etc) instructions that
         //     (might) change the instruction pointer, since this (might be) our
         //     last chance to record what has already been executed.
         s = line;
-        if (do_instrument && skip_exactly("\t", &s)) {
+        int found_branch = 0;
+        if (skip_exactly("\t", &s)) {
             for (int i = 0; x86_64_branching_inst[i] != NULL; i++) {
                 if (skip_exactly(x86_64_branching_inst[i], &s)) {
-                    // Record the trace chunk.
-                    id_t chunk_id = decoder_add_chunk(decoder, trace_chunk, trace_chunk_len);
-
-                    // Copy the record stub over, with values substituted in.
-                    ASSERT(fputs("######## RECORD\n", temp_f) > 0);
-                    FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
-                    ASSERT(stub_f != NULL);
-                    char stub_line[128];
-                    char stub_line_part[128];
-                    while (fgets(stub_line, sizeof(stub_line), stub_f) != NULL) {
-                        ASSERT(strlen(stub_line) > 0);
-                        ASSERT((stub_line[strlen(stub_line) - 1] == '\n') || feof(stub_f));
-
-                        char *stub_s = stub_line;
-                        while (scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part))) {
-                            ASSERT(fputs(stub_line_part, temp_f) > 0);
-                            ASSERT(skip_exactly("?", &stub_s));
-                            ASSERT(scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part)));
-                            if (strcmp(stub_line_part, "NONCE") == 0) {
-                                fprintf(temp_f, "%i", nonce);
-                            } else if (strcmp(stub_line_part, "TRACE_CHUNK_ID") == 0) {
-                                fprintf(temp_f, "$%i", chunk_id);
-                            } else {
-                                ASSERT(0);
-                            }
-                            ASSERT(skip_exactly("?", &stub_s));
-                        }
-                        ASSERT(fputs(stub_s, temp_f) > 0);
-                    }
-                    nonce++;
-                    fclose(stub_f);
-                    ASSERT(fputs("######## END\n", temp_f) > 0);
-
-                    trace_chunk_len = 0;
-                    goto done_with_line;
+                    found_branch = 1;
+                    break;
                 }
             }
+        }
+
+        // (continued)
+        if ((found_label || found_branch) && (trace_chunk_len > 0)) {
+            // Record the trace chunk.
+            id_t chunk_id = decoder_add_chunk(decoder, trace_chunk, trace_chunk_len);
+
+            // Copy the record stub over, with values substituted in.
+            ASSERT(fputs("######## RECORD\n", temp_f) > 0);
+            FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
+            ASSERT(stub_f != NULL);
+            char stub_line[128];
+            char stub_line_part[128];
+            while (fgets(stub_line, sizeof(stub_line), stub_f) != NULL) {
+                ASSERT(strlen(stub_line) > 0);
+                ASSERT((stub_line[strlen(stub_line) - 1] == '\n') || feof(stub_f));
+
+                char *stub_s = stub_line;
+                while (scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part))) {
+                    ASSERT(fputs(stub_line_part, temp_f) > 0);
+                    ASSERT(skip_exactly("?", &stub_s));
+                    ASSERT(scan_until_any("?", &stub_s, stub_line_part, sizeof(stub_line_part)));
+                    if (strcmp(stub_line_part, "NONCE") == 0) {
+                        fprintf(temp_f, "%i", nonce);
+                    } else if (strcmp(stub_line_part, "TRACE_CHUNK_ID") == 0) {
+                        fprintf(temp_f, "$%i", chunk_id);
+                    } else {
+                        ASSERT(0);
+                    }
+                    ASSERT(skip_exactly("?", &stub_s));
+                }
+                ASSERT(fputs(stub_s, temp_f) > 0);
+            }
+            nonce++;
+            fclose(stub_f);
+            ASSERT(fputs("######## END\n", temp_f) > 0);
+
+            trace_chunk_len = 0;
+            goto done_with_line;
         }
 
         // If we see a comment like "# trust-me-i-know-what-im-doing\n", we'll
