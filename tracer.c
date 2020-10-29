@@ -103,7 +103,6 @@ int main(int argc, char **argv) {
                     line_just_traced = line_id;
                 }
             }
-            // TODO also collapse like-lines here.
         }
 
         // Let the tracee know we're done.
