@@ -1,23 +1,9 @@
-#!/bin/bash -ex
-
-# .. gotta put this in a makefile ..
-mkdir gcc-bin || true
-# -O0 is default, but also makes assembly easier to parse for us?
-gcc -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 -D_DEFAULT_SOURCE as-tracer.c decoder.c scanning.c -o gcc-bin/as
+#!/bin/bash -e
 
 # -fverbose-asm: since GCC 7.1, gcc can annotate the asm output with which
 # source lines correspond to them.
 # -ffixed-$reg: since GCC (TODO, version?), gcc can be instructed to avoid
 # using certain registers in the generated asm.
-rm decoder || true
 touch decoder
-gcc -I. -Bgcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -Xassembler -d -Xassembler decoder -Xassembler -g -o state_and_time arch/x86_64/tracer_support.c state_and_time.c
-gcc -lrt -pthread -o tracer tracer.c decoder.c scanning.c
-
-./state_and_time 854729 5 &
-PID="$!"
-
-# Give a chance for set_up_tracer() to be run..
-sleep 1
-
-./tracer "$PID" decoder
+DIR="$(dirname "$(readlink -f "$0")")"
+gcc -I$DIR -B$DIR/gcc-bin -fverbose-asm -ffixed-r15 -lrt -pthread -Xassembler -g "$@"

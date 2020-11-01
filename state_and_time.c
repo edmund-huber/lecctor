@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <time.h>
 
 // "asm volatile" at file scope is broken in GCC 8.3:
@@ -7,6 +8,10 @@
 asm ( "\n# as-tracer-do-not-instrument" );
 
 void set_up_tracer(void);
+
+int int_cmp(int *p1, int *p2) {
+    return *p1 > *p2;
+}
 
 int main(int argc, char **argv) {
     set_up_tracer();

@@ -29,9 +29,14 @@ char *x86_64_branching_inst[] = {
     NULL
 };
 
+int execute_gas(char *input_fn, char *output_fn) {
+    char command[128] = { 0 };
+    snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, input_fn);
+    return system(command);
+}
+
 int main(int argc, char **argv) {
     // Parse the command line.
-    char *decoder_fn = NULL;
     char *output_fn = NULL;
     int debug = 0;
     int is_64 = 0;
@@ -48,9 +53,6 @@ int main(int argc, char **argv) {
             if (long_options[long_index].name == long_option_64) {
                 is_64 = 1;
             }
-            break;
-        case 'd':
-            decoder_fn = optarg;
             break;
         case 'g':
             debug = 1;
@@ -69,13 +71,19 @@ int main(int argc, char **argv) {
 
     // Check that we got the flags we were expecting.
     ASSERT(is_64);
-    ASSERT(decoder_fn != NULL);
     ASSERT(output_fn != NULL);
 
     // In addition to flags, we take one more option: the path to the assembler
     // file.
     ASSERT(optind == argc - 1);
     char *input_fn = argv[optind];
+
+    // We also need GCC_TRACER_DECODER to be set to the filename to use for the
+    // decoder file, otherwise let's just call gas directly.
+    char *decoder_fn;
+    if ((decoder_fn = getenv("GCC_TRACER_DECODER")) == NULL)
+        return execute_gas(input_fn, output_fn);
+    decoder_t *decoder = decoder_load(decoder_fn, 1);
 
     // Set up the temporary file that we will write the instrumented assembly
     // to, (which we'll later use gas to assemble).
@@ -85,7 +93,6 @@ int main(int argc, char **argv) {
     FILE *temp_f = fdopen(temp_fd, "w");
 
     // The following is the state of the parser, which works in a single pass:
-    decoder_t *decoder = decoder_load(decoder_fn, 1);
     int first_line = 1;
     int do_instrument = 1;
     #define TRACE_CHUNK_MAX_LEN 1000
@@ -194,7 +201,7 @@ int main(int argc, char **argv) {
         }
 
         // (continued)
-        if ((found_label || found_branch) && (trace_chunk_len > 0)) {
+        if ((found_label || found_branch) && (trace_chunk_len > 0) && do_instrument) {
             // Record the trace chunk.
             id_t chunk_id = decoder_add_chunk(decoder, trace_chunk, trace_chunk_len);
 
@@ -264,9 +271,7 @@ int main(int argc, char **argv) {
     ASSERT(trace_chunk_len == 0);
 
     // Use gas to assemble our instrumented assembly.
-    char command[128] = { 0 };
-    snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, temp_fn);
-    int ret = system(command);
+    int ret = execute_gas(temp_fn, output_fn);
 
     // Only clean up after ourselves if the debug flag isn't on.
     if (debug)
