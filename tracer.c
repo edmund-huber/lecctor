@@ -8,8 +8,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "assert.h"
 #include "decoder.h"
+#include "helpers.h"
 
 // TODO, following is also copypasta.
 
@@ -18,14 +18,21 @@
 
 #include <semaphore.h>
 
-typedef struct tracer {
+#define COALESCED_TRACE_BUFFER_LEN 32
+typedef struct {
     uint32_t magic;
+    sem_t one_thread_at_a_time;
     sem_t tracer_ready;
     sem_t tracers_turn;
     sem_t tracer_done;
-    uint32_t buffer[32];
-    uint32_t buffer_sentinel;
-} __attribute__((packed)) tracer_struct;
+    // When a thread calls wait_for_tracer, it'll dump its own trace buffer
+    // into this consolidated buffer.
+    struct {
+        pid_t tid;
+        uint32_t value;
+    } buffer[COALESCED_TRACE_BUFFER_LEN];
+    size_t remaining;
+} __attribute__((packed)) coalesced_trace_struct;
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -49,14 +56,15 @@ int main(int argc, char **argv) {
 
     // Is it the right size?
     int sz = lseek(fd, 0, SEEK_END);
-    if (sz != sizeof(tracer_struct)) {
-        fprintf(stderr, "shm is wrong size: got %i, expected %i\n", sz, sizeof(tracer_struct));
+    int expected = sizeof(coalesced_trace_struct);
+    if (sz != expected) {
+        fprintf(stderr, "shm is wrong size: got %i, expected %i\n", sz, expected);
         return 1;
     }
 
     // mmap it in.
-    tracer_struct *shm;
-    if ((shm = mmap(NULL, sizeof(tracer_struct), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0))
+    coalesced_trace_struct *shm;
+    if ((shm = mmap(NULL, sizeof(coalesced_trace_struct), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0))
         == MAP_FAILED) {
         fprintf(stderr, "mmap() failed with %s\n", strerror(errno));
         return 1;
@@ -88,11 +96,9 @@ int main(int argc, char **argv) {
 
         // Read out the trace data! The trace buffer must be full, otherwise we
         // wouldn't have been woken up.
-        for (int i = 0; i < sizeof(shm->buffer) / sizeof(shm->buffer[0]); i++) {
-            ASSERT(shm->buffer[i] != 0);
-
+        for (int i = 0; i < COALESCED_TRACE_BUFFER_LEN; i++) {
             // Find the corresponding line(s) and print them.
-            chunk_data_t *chunk_data = decoder_lookup_chunk(decoder, shm->buffer[i]);
+            chunk_data_t *chunk_data = decoder_lookup_chunk(decoder, shm->buffer[i].value);
             ASSERT(chunk_data != NULL);
             for (int i = 0; i < chunk_data->line_id_count; i++) {
                 id_t line_id = chunk_data->line_ids[i];

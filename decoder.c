@@ -3,8 +3,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
-#include "assert.h"
 #include "decoder.h"
+#include "helpers.h"
 #include "scanning.h"
 
 MAP_DECL(int, line_data_t);
@@ -187,6 +187,7 @@ id_t decoder_add_line(decoder_t *d, int line_no, char *line) {
         return data->line_id;
     }
 
+    ASSERT(d->current_file_id != -1);
     id_t id = add_one(d, "L %i %s`%i %s\n", d->current_file_id, d->current_file_name, line_no, line);
     return id;
 }

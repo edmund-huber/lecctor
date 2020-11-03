@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <libgen.h>
@@ -5,10 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sendfile.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-#include "assert.h"
 #include "decoder.h"
+#include "helpers.h"
 #include "scanning.h"
 
 int nonce = 0;
@@ -30,15 +33,45 @@ char *x86_64_branching_inst[] = {
 };
 
 int execute_gas(char *input_fn, char *output_fn) {
-    char command[128] = { 0 };
-    snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, input_fn);
+    char command[128] = { '\0' };
+    ASSERT(snprintf(command, sizeof(command), "as --64 -o %s %s", output_fn, input_fn)
+        < sizeof(command));
     return system(command);
+}
+
+void mkdir_p(char *dir) {
+    char *dir_copy = strdup(dir);
+    char *subdir = dirname(dir_copy);
+    int is_root = (strlen(subdir) == 1) && ((subdir[0] == '.') || (subdir[0] == '/'));
+    if (!is_root)
+        mkdir_p(subdir);
+    free(dir_copy);
+    ASSERT((mkdir(dir, 0777) == 0) || (errno == EEXIST));
+}
+
+#ifndef __linux__
+    #error "sendfile() between non-socket fds is linux-only"
+#endif
+void copy_file(char *in_path, char *dir, char *fn) {
+    mkdir_p(dir);
+    char out_path[PATH_MAX];
+    ASSERT(snprintf(out_path, sizeof(out_path), "%s/%s", dir, fn) < sizeof(out_path));
+    int out_fd = creat(out_path, 0660);
+    ASSERT(out_fd != -1);
+    int in_fd = open(in_path, O_RDONLY);
+    ASSERT(in_fd != -1);
+    off_t off = 0;
+    struct stat in_stat = { 0 };
+    ASSERT(fstat(in_fd, &in_stat) == 0);
+    while ((sendfile(out_fd, in_fd, &off, in_stat.st_size - off) != 1) && (off < in_stat.st_size));
+    close(out_fd);
+    close(in_fd);
 }
 
 int main(int argc, char **argv) {
     // Parse the command line.
     char *output_fn = NULL;
-    int debug = 0;
+    char *debug_dir = NULL;
     int is_64 = 0;
     int c;
     char *long_option_64 = "64";
@@ -47,7 +80,7 @@ int main(int argc, char **argv) {
         { 0, 0, 0, 0}
     };
     int long_index;
-    while ((c = getopt_long(argc, argv, "d:gI:o:", long_options, &long_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "d:g:I:o:", long_options, &long_index)) != -1) {
         switch (c) {
         case 0:
             if (long_options[long_index].name == long_option_64) {
@@ -55,7 +88,7 @@ int main(int argc, char **argv) {
             }
             break;
         case 'g':
-            debug = 1;
+            debug_dir = optarg;
             break;
         case 'I':
             // Only here because we pass -I. to gcc and it passes that flag to
@@ -65,7 +98,8 @@ int main(int argc, char **argv) {
             output_fn = optarg;
             break;
         default:
-            ASSERT(0);
+            // Just ignore everything else.
+            break;
         }
     }
 
@@ -93,16 +127,11 @@ int main(int argc, char **argv) {
     FILE *temp_f = fdopen(temp_fd, "w");
 
     // The following is the state of the parser, which works in a single pass:
-    int first_line = 1;
+    char first_path[PATH_MAX] = { '\0' };
     int do_instrument = 1;
     #define TRACE_CHUNK_MAX_LEN 1000
     id_t trace_chunk[TRACE_CHUNK_MAX_LEN] = { 0 };
     int trace_chunk_len = 0;
-    enum {
-        TRUSTFREE,
-        TRUST_NEXT_LINE,
-        TRUST_THIS_LINE
-    } trust = TRUSTFREE;
 
     FILE *in_file = fopen(input_fn, "r");
     ASSERT(in_file != NULL);
@@ -121,11 +150,13 @@ int main(int argc, char **argv) {
             skip_exactly("\"\n", &s) &&
             *s == '\0';
         if (found_file_directive) {
+            // If this is the first file directive we've come across, then it's
+            // our best guess for which one C input file this assembly
+            // corresponds to.
+            strncpy(first_path, source_fn, sizeof(first_path));
+
             decoder_set_current_file(decoder, source_fn);
             goto done_with_line;
-        } else {
-            // Expecting the .file directive on the first line.
-            ASSERT(!first_line);
         }
 
         // If we encounter "# as-tracer-do-not-instrument" then we'll turn off
@@ -156,10 +187,6 @@ int main(int argc, char **argv) {
             skip_exactly("\n", &s) &&
             *s == '\0';
         if (found_verbose_asm_comment) {
-            // If this isn't the same source file called out in the .file
-            // directive, then we are extremely confused.
-            ASSERT(strcmp(decoder->current_file_name, basename(found_source_fn)) == 0);
-
             if (do_instrument) {
                 int line_no = atoi(found_line_no);
                 id_t line_id = decoder_add_line(decoder, line_no, found_line);
@@ -207,7 +234,7 @@ int main(int argc, char **argv) {
 
             // Copy the record stub over, with values substituted in.
             ASSERT(fputs("######## RECORD\n", temp_f) > 0);
-            FILE *stub_f = fopen("arch/x86_64/record_stub.s", "r");
+            FILE *stub_f = fopen(xstr(BASE_DIRECTORY) "/arch/x86_64/record_stub.s", "r");
             ASSERT(stub_f != NULL);
             char stub_line[128];
             char stub_line_part[128];
@@ -239,28 +266,7 @@ int main(int argc, char **argv) {
             goto done_with_line;
         }
 
-        // If we see a comment like "# trust-me-i-know-what-im-doing\n", we'll
-        // allow the next line of assembly to reference r15.
-        s = line;
-        if (skip_exactly("\t# trust-me-i-know-what-im-doing\n", &s)) {
-            trust = TRUST_NEXT_LINE;
-        }
-
-        // If we come across any use of the r15 register, then the -ffixed-r15
-        // flag didn't work, and we can't continue.
-        ASSERT((trust == TRUST_THIS_LINE) || (strstr(line, "%r15") == NULL));
-
     done_with_line:
-        first_line = 0;
-        switch (trust) {
-        case TRUSTFREE: break;
-        case TRUST_NEXT_LINE:
-            trust = TRUST_THIS_LINE;
-            break;
-        case TRUST_THIS_LINE:
-            trust = TRUSTFREE;
-            break;
-        }
         fputs(line, temp_f);
     }
     fclose(temp_f);
@@ -273,11 +279,26 @@ int main(int argc, char **argv) {
     // Use gas to assemble our instrumented assembly.
     int ret = execute_gas(temp_fn, output_fn);
 
-    // Only clean up after ourselves if the debug flag isn't on.
-    if (debug)
-        printf("as-tracer done: input %s, output %s\n", input_fn, temp_fn);
-    else
+    // If we're trying to debug, store the original and transformed assembly
+    // somewhere.
+    if (debug_dir != NULL) {
+        char dir[PATH_MAX] = { '\0' };
+        char *first_path_copy = strdup(first_path);
+        char *first_dir = dirname(first_path_copy);
+        ASSERT(snprintf(dir, sizeof(dir), "%s/%s", debug_dir, first_dir) < sizeof(dir));
+        free(first_path_copy);
+        first_path_copy = strdup(first_path);
+        char *first_basename = basename(first_path_copy);
+        copy_file(input_fn, dir, first_basename);
+        char instd[PATH_MAX] = { '\0' };
+        ASSERT(snprintf(instd, sizeof(instd), "%s.inst", first_basename) < sizeof(instd));
+        copy_file(temp_fn, dir, instd);
+        free(first_path_copy);
+        //copy_file_no_clobber(temp_fn, "a/b/c", instrumented_input_fn);
+    } else {
+        // Otherwise we can throw away the transformed assembly.
         unlink(temp_fn);
+    }
 
     return ret;
 }

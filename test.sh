@@ -3,9 +3,9 @@
 ./build.sh
 
 rm decoder || true
+touch decoder
 export GCC_TRACER_DECODER=decoder
-./gcc-tracer -c state_and_time.c
-./gcc-tracer state_and_time.o arch/x86_64/tracer_support.c -o state_and_time
+./gcc-tracer state_and_time.c arch/x86_64/tracer_support.c arch/x86_64/wait_for_tracer_wrapper.s -o state_and_time
 
 ./state_and_time 854729 5 &
 PID="$!"

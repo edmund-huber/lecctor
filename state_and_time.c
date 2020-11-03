@@ -3,10 +3,6 @@
 #include <limits.h>
 #include <time.h>
 
-// "asm volatile" at file scope is broken in GCC 8.3:
-// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89585 .
-asm ( "\n# as-tracer-do-not-instrument" );
-
 void set_up_tracer(void);
 
 int int_cmp(int *p1, int *p2) {
@@ -15,10 +11,6 @@ int int_cmp(int *p1, int *p2) {
 
 int main(int argc, char **argv) {
     set_up_tracer();
-
-    asm volatile (
-        "\n# as-tracer-do-instrument"
-    );
 
     // Parse out arguments.
     if (argc != 3) {
