@@ -1,0 +1,26 @@
+# TODO: does -O0 make assembly easier to parse for us?
+cflags = -std=c99 -Wall -O0 -D_POSIX_C_SOURCE=200809 -D_DEFAULT_SOURCE -DBASE_DIRECTORY=$pwd
+
+rule cc
+  command = gcc -c $cflags -c $in -o $out -MMD -MF $out.d
+  depfile = $out.d
+  deps = gcc
+
+rule link
+  command = gcc $in -lrt -pthread -o $out
+
+rule mkdir
+  command = mkdir -p $out
+
+build obj: mkdir
+build obj/as-tracer.o: cc as-tracer.c
+build obj/decoder.o: cc decoder.c
+build obj/gcc-tracer.o: cc gcc-tracer.c
+build obj/scanning.o: cc scanning.c
+build obj/tracer.o: cc tracer.c
+
+build bin: mkdir
+build bin/gcc-tracer: link obj/gcc-tracer.o
+build bin/tracer: link obj/decoder.o obj/scanning.o obj/tracer.o
+build gcc-bin: mkdir
+build gcc-bin/as: link obj/as-tracer.o obj/decoder.o obj/scanning.o
