@@ -1,0 +1,4 @@
+.ninja_*
+bin/
+gcc-bin/
+obj/
